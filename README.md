@@ -234,6 +234,8 @@ if __name__ == '__main__':
 
 ```
 
+#### **Version1 no-ML:**
+
 3.**Create an ElasticSearch instance using the AWS ElasticSearch Service.**
 
 - create lambda function to  index new and existing Amazon DynamoDB content with Amazon Elasticsearch Service
@@ -551,6 +553,675 @@ if __name__ == "__main__":
 
 ```
 
+#### Version2 ML:
+
+**4. Pick 100 restaurants that you like from the 5,000+ you scraped at Step 1.
+(FILE_2, training data); Pick 100 restaurants that you do NOT like from the 5,000+ you scraped at
+Step 1. (add to FILE_2, training data); Process and Prepare Your Files**
+
+**5. Use AWS Sagemaker to build a restaurant prediction model. Apply linear-learner algorithm to make the prediction.** 
+
+## Set up
+
+
+
+Import the Python libraries required
+
+In [3]:
+
+```python
+import boto3
+from sagemaker import get_execution_role
+import sagemaker.amazon.common as smac
+from sagemaker.amazon.amazon_estimator import get_image_uri
+import pandas as pd
+import io
+import time
+import os
+import json
+import csv
+```
+
+Specify role, bucket and prefix
+
+In [4]:
+
+```
+role = get_execution_role()
+
+bucket = 'yelp-test'
+prefix = 'my-restaurants' 
+```
+
+## Preprocess the dataset
+
+
+
+Import training dataset from FILE_2.csv
+
+In [7]:
+
+```python
+train_data = pd.read_csv('s3://yelp-test/my-restaurants/FILE_2.csv')
+train_data.columns = ["Business_ID", "Cuisine_Type", "Number_of_Reviews", "Rating", "Recommended"]
+print(train_data.shape)    
+display(train_data.head())     
+display(train_data.Recommended.value_counts())
+```
+
+```python
+(200, 5)
+```
+
+
+
+|      | Business_ID            | Cuisine_Type | Number_of_Reviews | Rating | Recommended |
+| ---- | ---------------------- | ------------ | ----------------- | ------ | ----------- |
+| 0    | 44SY464xDHbvOcjDzRbKkQ | Korean       | 9709              | 4.0    | 1           |
+| 1    | 44SY464xDHbvOcjDzRbKkQ | Korean       | 9709              | 4.0    | 1           |
+| 2    | H4jJ7XB3CetIr1pg56CczQ | France       | 7458              | 4.5    | 1           |
+| 3    | H4jJ7XB3CetIr1pg56CczQ | France       | 7458              | 4.5    | 1           |
+| 4    | WIhm0W9197f_rRtDziq5qQ | Italian      | 5826              | 4.0    | 1           |
+
+```
+1    100
+0    100
+Name: Recommended, dtype: int64
+```
+
+Prepare the label and input features
+
+In [8]:
+
+```python
+cuisine_mapping = {'Chinese': 1, 'Korean': 2, 'Italian': 3, 'American': 4, 'Mexican': 5, 'France': 6}
+training = train_data.replace({'Cuisine_Type': cuisine_mapping})
+
+print(training.shape)
+display(training.head())
+display(training.Recommended.value_counts())
+
+# label
+train_y = training.iloc[:,4].as_matrix()
+print(train_y)
+
+# input features: Cuisine, NumberOfReviews, Rating
+train_X = training.iloc[:,[1, 2, 3]].as_matrix()
+print(train_X)
+```
+
+```
+(200, 5)
+```
+
+
+
+|      | Business_ID            | Cuisine_Type | Number_of_Reviews | Rating | Recommended |
+| ---- | ---------------------- | ------------ | ----------------- | ------ | ----------- |
+| 0    | 44SY464xDHbvOcjDzRbKkQ | 2            | 9709              | 4.0    | 1           |
+| 1    | 44SY464xDHbvOcjDzRbKkQ | 2            | 9709              | 4.0    | 1           |
+| 2    | H4jJ7XB3CetIr1pg56CczQ | 6            | 7458              | 4.5    | 1           |
+| 3    | H4jJ7XB3CetIr1pg56CczQ | 6            | 7458              | 4.5    | 1           |
+| 4    | WIhm0W9197f_rRtDziq5qQ | 3            | 5826              | 4.0    | 1           |
+
+
+
+```
+1    100
+0    100
+Name: Recommended, dtype: int64
+```
+
+
+
+```python
+[1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+ 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+ 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0
+ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+[[2.000e+00 9.709e+03 4.000e+00]
+ [2.000e+00 9.709e+03 4.000e+00]
+ [6.000e+00 7.458e+03 4.500e+00]
+ [6.000e+00 7.458e+03 4.500e+00]
+ [3.000e+00 5.826e+03 4.000e+00]
+ [3.000e+00 5.826e+03 4.000e+00]
+ [1.000e+00 5.687e+03 4.000e+00]
+ [1.000e+00 5.687e+03 4.000e+00]
+ [4.000e+00 5.294e+03 4.000e+00]
+ [4.000e+00 5.294e+03 4.000e+00]
+ [3.000e+00 5.249e+03 4.000e+00]
+ [3.000e+00 5.249e+03 4.000e+00]
+ [2.000e+00 5.161e+03 4.000e+00]
+ [2.000e+00 5.161e+03 4.000e+00]
+ [4.000e+00 4.996e+03 4.000e+00]
+ [6.000e+00 4.996e+03 4.000e+00]
+ [4.000e+00 4.996e+03 4.000e+00]
+ [6.000e+00 4.996e+03 4.000e+00]
+ [4.000e+00 4.603e+03 4.000e+00]
+ [5.000e+00 4.603e+03 4.000e+00]
+ [6.000e+00 4.603e+03 4.000e+00]
+ [4.000e+00 4.603e+03 4.000e+00]
+ [6.000e+00 4.603e+03 4.000e+00]
+ [5.000e+00 4.603e+03 4.000e+00]
+ [1.000e+00 4.140e+03 4.000e+00]
+ [1.000e+00 4.140e+03 4.000e+00]
+ [6.000e+00 4.120e+03 4.000e+00]
+ [6.000e+00 4.120e+03 4.000e+00]
+ [4.000e+00 4.038e+03 4.000e+00]
+ [4.000e+00 4.038e+03 4.000e+00]
+ [4.000e+00 3.884e+03 3.000e+00]
+ [6.000e+00 3.884e+03 3.000e+00]
+ [1.000e+00 3.735e+03 4.000e+00]
+ [4.000e+00 3.735e+03 4.000e+00]
+ [2.000e+00 3.735e+03 4.000e+00]
+ [4.000e+00 3.735e+03 4.000e+00]
+ [1.000e+00 3.735e+03 4.000e+00]
+ [2.000e+00 3.735e+03 4.000e+00]
+ [6.000e+00 3.631e+03 4.000e+00]
+ [6.000e+00 3.631e+03 4.000e+00]
+ [4.000e+00 3.630e+03 4.000e+00]
+ [4.000e+00 3.630e+03 4.000e+00]
+ [2.000e+00 3.429e+03 4.000e+00]
+ [2.000e+00 3.429e+03 4.000e+00]
+ [3.000e+00 3.325e+03 4.000e+00]
+ [3.000e+00 3.325e+03 4.000e+00]
+ [1.000e+00 3.320e+03 4.000e+00]
+ [1.000e+00 3.320e+03 4.000e+00]
+ [4.000e+00 3.236e+03 4.000e+00]
+ [4.000e+00 3.236e+03 4.000e+00]
+ [5.000e+00 3.090e+03 4.000e+00]
+ [5.000e+00 3.090e+03 4.000e+00]
+ [4.000e+00 3.037e+03 4.000e+00]
+ [4.000e+00 3.037e+03 4.000e+00]
+ [2.000e+00 2.930e+03 4.000e+00]
+ [2.000e+00 2.930e+03 4.000e+00]
+ [4.000e+00 2.905e+03 4.000e+00]
+ [6.000e+00 2.905e+03 4.000e+00]
+ [4.000e+00 2.905e+03 4.000e+00]
+ [6.000e+00 2.905e+03 4.000e+00]
+ [4.000e+00 2.862e+03 4.000e+00]
+ [6.000e+00 2.862e+03 4.000e+00]
+ [4.000e+00 2.862e+03 4.000e+00]
+ [6.000e+00 2.862e+03 4.000e+00]
+ [2.000e+00 2.829e+03 4.000e+00]
+ [5.000e+00 2.783e+03 4.000e+00]
+ [5.000e+00 2.783e+03 4.000e+00]
+ [4.000e+00 2.752e+03 4.500e+00]
+ [4.000e+00 2.752e+03 4.500e+00]
+ [4.000e+00 2.731e+03 4.500e+00]
+ [6.000e+00 2.731e+03 4.500e+00]
+ [4.000e+00 2.731e+03 4.500e+00]
+ [6.000e+00 2.731e+03 4.500e+00]
+ [4.000e+00 2.715e+03 4.000e+00]
+ [3.000e+00 2.715e+03 4.000e+00]
+ [4.000e+00 2.715e+03 4.000e+00]
+ [3.000e+00 2.715e+03 4.000e+00]
+ [2.000e+00 2.702e+03 4.000e+00]
+ [6.000e+00 2.675e+03 4.500e+00]
+ [6.000e+00 2.675e+03 4.500e+00]
+ [3.000e+00 2.674e+03 4.500e+00]
+ [3.000e+00 2.674e+03 4.500e+00]
+ [5.000e+00 2.632e+03 4.500e+00]
+ [5.000e+00 2.632e+03 4.500e+00]
+ [3.000e+00 2.629e+03 4.000e+00]
+ [3.000e+00 2.629e+03 4.000e+00]
+ [2.000e+00 2.515e+03 4.000e+00]
+ [5.000e+00 2.514e+03 4.000e+00]
+ [5.000e+00 2.514e+03 4.000e+00]
+ [1.000e+00 2.501e+03 4.500e+00]
+ [2.000e+00 2.501e+03 4.500e+00]
+ [6.000e+00 2.501e+03 4.500e+00]
+ [1.000e+00 2.501e+03 4.500e+00]
+ [6.000e+00 2.501e+03 4.500e+00]
+ [2.000e+00 2.501e+03 4.500e+00]
+ [5.000e+00 2.459e+03 4.000e+00]
+ [5.000e+00 2.459e+03 4.000e+00]
+ [1.000e+00 2.442e+03 4.000e+00]
+ [1.000e+00 2.442e+03 4.000e+00]
+ [4.000e+00 2.428e+03 4.500e+00]
+ [5.000e+00 1.000e+00 1.000e+00]
+ [2.000e+00 1.000e+00 1.000e+00]
+ [2.000e+00 1.000e+00 1.000e+00]
+ [5.000e+00 1.000e+00 1.000e+00]
+ [6.000e+00 2.000e+00 1.000e+00]
+ [6.000e+00 2.000e+00 1.000e+00]
+ [6.000e+00 4.000e+00 2.000e+00]
+ [6.000e+00 4.000e+00 2.000e+00]
+ [1.000e+00 6.000e+00 2.000e+00]
+ [1.000e+00 6.000e+00 2.000e+00]
+ [1.000e+00 2.900e+01 2.000e+00]
+ [1.000e+00 2.900e+01 2.000e+00]
+ [1.000e+00 3.000e+01 2.000e+00]
+ [1.000e+00 3.000e+01 2.000e+00]
+ [1.000e+00 3.200e+01 2.000e+00]
+ [1.000e+00 3.200e+01 2.000e+00]
+ [1.000e+00 3.800e+01 2.000e+00]
+ [1.000e+00 3.800e+01 2.000e+00]
+ [1.000e+00 4.000e+01 2.000e+00]
+ [1.000e+00 4.000e+01 2.000e+00]
+ [1.000e+00 6.700e+01 2.000e+00]
+ [1.000e+00 6.700e+01 2.000e+00]
+ [1.000e+00 8.000e+01 2.000e+00]
+ [1.000e+00 8.000e+01 2.000e+00]
+ [1.000e+00 1.010e+02 2.000e+00]
+ [1.000e+00 1.010e+02 2.000e+00]
+ [3.000e+00 3.030e+02 2.000e+00]
+ [3.000e+00 3.030e+02 2.000e+00]
+ [5.000e+00 2.000e+00 2.500e+00]
+ [6.000e+00 2.000e+00 2.500e+00]
+ [6.000e+00 2.000e+00 2.500e+00]
+ [5.000e+00 2.000e+00 2.500e+00]
+ [1.000e+00 3.000e+00 2.500e+00]
+ [5.000e+00 3.000e+00 2.500e+00]
+ [6.000e+00 3.000e+00 2.500e+00]
+ [1.000e+00 3.000e+00 2.500e+00]
+ [6.000e+00 3.000e+00 2.500e+00]
+ [5.000e+00 3.000e+00 2.500e+00]
+ [1.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [1.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [2.000e+00 4.000e+00 2.500e+00]
+ [1.000e+00 7.000e+00 2.500e+00]
+ [5.000e+00 7.000e+00 2.500e+00]
+ [1.000e+00 7.000e+00 2.500e+00]
+ [5.000e+00 7.000e+00 2.500e+00]
+ [1.000e+00 9.000e+00 2.500e+00]
+ [1.000e+00 9.000e+00 2.500e+00]
+ [2.000e+00 1.000e+01 2.500e+00]
+ [2.000e+00 1.000e+01 2.500e+00]
+ [1.000e+00 1.100e+01 2.500e+00]
+ [1.000e+00 1.100e+01 2.500e+00]
+ [1.000e+00 1.100e+01 2.500e+00]
+ [1.000e+00 1.100e+01 2.500e+00]
+ [1.000e+00 1.200e+01 2.500e+00]
+ [4.000e+00 1.200e+01 2.500e+00]
+ [5.000e+00 1.200e+01 2.500e+00]
+ [2.000e+00 1.200e+01 2.500e+00]
+ [4.000e+00 1.200e+01 2.500e+00]
+ [1.000e+00 1.200e+01 2.500e+00]
+ [2.000e+00 1.200e+01 2.500e+00]
+ [5.000e+00 1.200e+01 2.500e+00]
+ [5.000e+00 1.300e+01 2.500e+00]
+ [5.000e+00 1.300e+01 2.500e+00]
+ [2.000e+00 1.600e+01 2.500e+00]
+ [1.000e+00 1.800e+01 2.500e+00]
+ [1.000e+00 1.800e+01 2.500e+00]
+ [6.000e+00 1.800e+01 2.500e+00]
+ [1.000e+00 1.800e+01 2.500e+00]
+ [1.000e+00 1.800e+01 2.500e+00]
+ [6.000e+00 1.800e+01 2.500e+00]
+ [1.000e+00 1.900e+01 2.500e+00]
+ [2.000e+00 1.900e+01 2.500e+00]
+ [1.000e+00 1.900e+01 2.500e+00]
+ [2.000e+00 1.900e+01 2.500e+00]
+ [1.000e+00 2.000e+01 2.500e+00]
+ [5.000e+00 2.000e+01 2.500e+00]
+ [1.000e+00 2.000e+01 2.500e+00]
+ [5.000e+00 2.000e+01 2.500e+00]
+ [1.000e+00 2.200e+01 2.500e+00]
+ [2.000e+00 2.200e+01 2.500e+00]
+ [1.000e+00 2.200e+01 2.500e+00]
+ [2.000e+00 2.200e+01 2.500e+00]
+ [1.000e+00 2.300e+01 2.500e+00]
+ [5.000e+00 2.300e+01 2.500e+00]
+ [1.000e+00 2.300e+01 2.500e+00]
+ [5.000e+00 2.300e+01 2.500e+00]
+ [1.000e+00 2.800e+01 2.500e+00]
+ [1.000e+00 2.800e+01 2.500e+00]
+ [1.000e+00 3.000e+01 2.500e+00]
+ [1.000e+00 3.000e+01 2.500e+00]
+ [5.000e+00 3.000e+01 2.500e+00]
+ [1.000e+00 3.000e+01 2.500e+00]
+ [1.000e+00 3.000e+01 2.500e+00]
+ [5.000e+00 3.000e+01 2.500e+00]
+ [1.000e+00 3.100e+01 2.500e+00]]
+```
+
+Transform the datatype to RecordIO and upload to S3
+
+In [9]:
+
+```
+train_file = 'linear_train.data'
+
+# Convert the training data into the format required by the SageMaker Linear Learner algorithm
+buf = io.BytesIO()
+smac.write_numpy_to_dense_tensor(buf, train_X.astype('float32'), train_y.astype('float32'))
+buf.seek(0)
+
+boto3.resource('s3').Bucket(bucket).Object(os.path.join(prefix, 'train', train_file)).upload_fileobj(buf)
+```
+
+
+
+------
+
+## Train
+
+
+
+Specify container images used for training SageMaker's linear-learner
+
+In [10]:
+
+```python
+container = get_image_uri(boto3.Session().region_name, 'linear-learner')
+```
+
+Prepare the parameters for the training job
+
+In [11]:
+
+```python
+linear_job = 'linear-lowlevel-' + time.strftime("%Y-%m-%d-%H-%M-%S", time.gmtime())
+#print("Job name is:", linear_job)
+
+linear_training_params = {
+    "RoleArn": role,
+    "TrainingJobName": linear_job,
+    "AlgorithmSpecification": {
+        "TrainingImage": container,
+        "TrainingInputMode": "File"
+    },
+    "ResourceConfig": {
+        "InstanceCount": 1,
+        "InstanceType": "ml.c4.2xlarge",
+        "VolumeSizeInGB": 10
+    },
+    "InputDataConfig": [
+        {
+            "ChannelName": "train",
+            "DataSource": {
+                "S3DataSource": {
+                    "S3DataType": "S3Prefix",
+                    "S3Uri": "s3://{}/{}/train/".format(bucket, prefix),
+                    "S3DataDistributionType": "ShardedByS3Key"
+                }
+            },
+            "CompressionType": "None",
+            "RecordWrapperType": "None"
+        }
+    ],
+    "OutputDataConfig": {
+        "S3OutputPath": "s3://{}/{}/model/".format(bucket, prefix)
+    },
+    "HyperParameters": {
+        "feature_dim": "3",
+        "mini_batch_size": "10",
+        "predictor_type": "binary_classifier",
+        "epochs": "15",
+        "num_models": "32",
+        "loss": "logistic"
+    },
+    "StoppingCondition": {
+        "MaxRuntimeInSeconds": 60 * 60
+    }
+}
+```
+
+Create a training job and train the model
+
+In [12]:
+
+```python
+%%time
+
+sm = boto3.client('sagemaker')
+
+sm.create_training_job(**linear_training_params)
+
+status = sm.describe_training_job(TrainingJobName=linear_job)['TrainingJobStatus']
+print(status)
+
+try:
+    sm.get_waiter('training_job_completed_or_stopped').wait(TrainingJobName=linear_job)
+finally:
+    status = sm.describe_training_job(TrainingJobName=linear_job)['TrainingJobStatus']
+    print("Training job ended with status: " + status)
+    if status == 'Failed':
+        message = sm.describe_training_job(TrainingJobName=linear_job)['FailureReason']
+        print('Training failed with the following error: {}'.format(message))
+        raise Exception('Training job failed')
+```
+
+```python
+InProgress
+Training job ended with status: Completed
+CPU times: user 74.6 ms, sys: 4.17 ms, total: 78.8 ms
+Wall time: 4min
+```
+
+
+
+------
+
+## Deploy
+
+
+
+Import testing dataset from FILE_1.csv
+
+In [14]:
+
+
+
+```python
+test_data = pd.read_csv('s3://yelp-test/my-restaurants/FILE_1.csv')
+train_data.columns = ["Business_ID", "Cuisine_Type", "Number_of_Reviews", "Rating", "Recommended"]
+print(test_data.shape)    # print the shape of the data file
+display(test_data.head())     # show the top few rows
+#print(testing.iloc[0]['Rating'])
+#print(len(testing.index))
+```
+
+```
+(6000, 4)
+```
+
+
+
+|      | Business_ID            | Cuisine_Type | Number_of_Reviews | Rating |
+| ---- | ---------------------- | ------------ | ----------------- | ------ |
+| 0    | _BL1-CT06HGkiA3jcucu2Q | Chinese      | 31                | 2.5    |
+| 1    | 24zawWdBJLwm6lsqLDqfHQ | Korean       | 33                | 2.5    |
+| 2    | 24zawWdBJLwm6lsqLDqfHQ | Korean       | 33                | 2.5    |
+| 3    | y8Z9Tos6qtDVd0X0QVm70g | Chinese      | 34                | 2.5    |
+| 4    | y8Z9Tos6qtDVd0X0QVm70g | Chinese      | 34                | 2.5    |
+
+Prepare the input features
+
+In [15]:
+
+```
+testing = test_data.replace({'Cuisine_Type': cuisine_mapping})
+
+print(testing.shape)
+display(testing.head())
+
+test_X = testing.iloc[:,[1, 2, 3]].as_matrix()
+print(test_X)
+```
+
+```
+(6000, 4)
+```
+
+
+
+|      | Business_ID            | Cuisine_Type | Number_of_Reviews | Rating |
+| ---- | ---------------------- | ------------ | ----------------- | ------ |
+| 0    | _BL1-CT06HGkiA3jcucu2Q | 1            | 31                | 2.5    |
+| 1    | 24zawWdBJLwm6lsqLDqfHQ | 2            | 33                | 2.5    |
+| 2    | 24zawWdBJLwm6lsqLDqfHQ | 2            | 33                | 2.5    |
+| 3    | y8Z9Tos6qtDVd0X0QVm70g | 1            | 34                | 2.5    |
+| 4    | y8Z9Tos6qtDVd0X0QVm70g | 1            | 34                | 2.5    |
+
+```python
+[[  1.   31.    2.5]
+ [  2.   33.    2.5]
+ [  2.   33.    2.5]
+ ...
+ [  5.  339.    5. ]
+ [  4.  677.    5. ]
+ [  5.  677.    5. ]]
+```
+
+Transform the datatype to RecordIO and upload to s3
+
+In [16]:
+
+```python
+test_file = 'linear_test.data'
+
+# Convert the testing data into the format required by the SageMaker Linear Learner algorithm
+buf = io.BytesIO()
+smac.write_numpy_to_dense_tensor(buf, test_X.astype('float32'))
+buf.seek(0)
+
+boto3.resource('s3').Bucket(bucket).Object(os.path.join(prefix, 'test', test_file)).upload_fileobj(buf)
+```
+
+Create a model from the model artifacts
+
+In [17]:
+
+```python
+%%time
+
+model_name = linear_job
+print(model_name)
+
+info = sm.describe_training_job(TrainingJobName=linear_job)
+model_data = info['ModelArtifacts']['S3ModelArtifacts']
+
+primary_container = {
+    'Image': container,
+    'ModelDataUrl': model_data
+}
+
+create_model_response = sm.create_model(
+    ModelName = model_name,
+    ExecutionRoleArn = role,
+    PrimaryContainer = primary_container)
+
+print(create_model_response['ModelArn'])
+```
+
+
+
+```python
+linear-lowlevel-2019-04-25-17-33-41
+arn:aws:sagemaker:us-east-1:791032249995:model/linear-lowlevel-2019-04-25-17-33-41
+CPU times: user 18.4 ms, sys: 0 ns, total: 18.4 ms
+Wall time: 367 ms
+```
+
+
+
+Create a batch transform job and infer the label for testing dataset
+
+In [18]:
+
+```python
+batch_job = 'Batch-Transform-' + time.strftime("%Y-%m-%d-%H-%M-%S", time.gmtime())
+print("Job name is:", batch_job)
+
+batch_transform_params = {
+    "TransformJobName": batch_job,
+    "ModelName": model_name,
+    "MaxConcurrentTransforms": 0,
+    "MaxPayloadInMB": 6,
+    "BatchStrategy": "MultiRecord",
+    "TransformOutput": {
+        "S3OutputPath": "s3://{}/{}/result/".format(bucket, prefix)
+    },
+    "TransformInput": {
+        "DataSource": {
+            "S3DataSource": {
+                "S3DataType": "S3Prefix",
+                "S3Uri": "s3://{}/{}/test/".format(bucket, prefix) 
+            }
+        },
+        "ContentType": "application/x-recordio-protobuf",
+        "SplitType": "RecordIO",
+        "CompressionType": "None"
+    },
+    "TransformResources": {
+            "InstanceType": "ml.m4.xlarge",
+            "InstanceCount": 1
+    }
+}
+
+sm.create_transform_job(**batch_transform_params)
+
+### Wait until the job finishes
+while(True):
+    response = sm.describe_transform_job(TransformJobName=batch_job)
+    status = response['TransformJobStatus']
+    if  status == 'Completed':
+        print("Transform job ended with status: " + status)
+        break
+    if status == 'Failed':
+        message = response['FailureReason']
+        print('Transform failed with the following error: {}'.format(message))
+        raise Exception('Transform job failed') 
+    print("Transform job is still in status: " + status)    
+    time.sleep(60)    
+```
+
+```python
+Job name is: Batch-Transform-2019-04-25-17-38-55
+Transform job is still in status: InProgress
+Transform job is still in status: InProgress
+Transform job is still in status: InProgress
+Transform job is still in status: InProgress
+Transform job ended with status: Completed
+```
+
+Process the prediction result (FILE_3.csv) and upload to S3
+
+In [19]:
+
+```python
+### Fetch the transform output
+s3_client = boto3.client('s3')
+
+output_key = "my-restaurants/result/linear_test.data.out"
+s3_client.download_file(bucket, output_key, '/tmp/test-result')
+
+# open a file for writing
+labeled_result = open('/tmp/FILE_3.csv', 'w')
+csvwriter = csv.writer(labeled_result)
+csvwriter.writerow(['Label','Score','Business_ID','Cuisine_Type','Number_of_Reviews','Rating'])
+
+# write to csv
+with open('/tmp/test-result') as f:
+    results = f.readlines()
+    
+    #print(len(results))
+
+    for i in range(0, len(results)):
+        result_json = json.loads(results[i])
+        result_json['Business_ID'] = test_data.iloc[i]['Business_ID']
+        result_json['Cuisine_Type'] = test_data.iloc[i]['Cuisine_Type']
+        result_json['Number_of_Reviews'] = test_data.iloc[i]['Number_of_Reviews']
+        result_json['Rating'] = test_data.iloc[i]['Rating']
+        
+        csvwriter.writerow(result_json.values())
+
+labeled_result.close()
+
+# upload file to S3
+upload_key = "my-restaurants/FILE_3.csv"
+s3_client.upload_file('/tmp/FILE_3.csv', bucket, upload_key)
+```
+
 **7. Build a suggestions module, that is decoupled from the Lex chatbot.**
 
 - In LF1, during the fulfillment step, push the information collected from the user (location, cuisine, etc.) to an SQS queue. 
@@ -608,9 +1279,9 @@ def sendSQSmessage(location, cuisine, number, dining_date, dining_time, email):
 
 ```
 
-- Create a new Lambda function (LF2) that acts as a queue worker. Whenever it is invoked it 1. pulls a message from the SQS queue, 2. gets a random restaurant recommendation for the cuisine collected through conversation from ElasticSearch and DynamoDB, 3. formats them and 4. sends them over text message to the phone number included in the SQS message :
+- Create a new Lambda function (LF2) that acts as a queue worker. Whenever it is invoked it 1. pulls a message from the SQS queue, 2. gets a random restaurant recommendation for the cuisine collected through conversation from ElasticSearch and DynamoDB, 3. formats them and 4. sends them over text message to the phone number included in the SQS message. Set up a CloudWatch event trigger that runs every minute and invokes the Lambda function as a result:
 
-![image-20190421204832999](/Users/cong/Library/Application Support/typora-user-images/image-20190421204832999.png)
+![image-20190430225702279](/Users/cong/Library/Application Support/typora-user-images/image-20190430225702279.png)
 
 ```python
 import boto3
@@ -624,8 +1295,10 @@ service = 'es'
 credentials = boto3.Session().get_credentials()
 awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
 
-host = 'search-myrestaurants-cvudxasaxuxwxfy7d2kcwrluf4.us-east-1.es.amazonaws.com' # For example, search-mydomain-id.us-west-1.es.amazonaws.com
-index = 'yelp-restaurants'
+# host = 'search-myrestaurants-cvudxasaxuxwxfy7d2kcwrluf4.us-east-1.es.amazonaws.com' # For example, search-mydomain-id.us-west-1.es.amazonaws.com
+# index = 'yelp-restaurants'
+host = 'search-my-ml-restaurants-mnncskxhgpqmz6psyq7sevxauu.us-east-1.es.amazonaws.com'
+index = 'prediction'
 url = 'https://' + host + '/' + index + '/_search'
 
 ses = boto3.client('ses',region)
@@ -663,6 +1336,7 @@ def lambda_handler(event, context):
     number=message['MessageAttributes'].get('Number').get('StringValue')
     diningdate=message['MessageAttributes'].get('DiningDate').get('StringValue')
     diningtime=message['MessageAttributes'].get('DiningTime').get('StringValue')
+    phone=message['MessageAttributes'].get('Phone').get('StringValue')
 
 
     # Delete received message from queue
@@ -703,7 +1377,8 @@ def lambda_handler(event, context):
     data = [doc for doc in json.loads(r.text)['hits']['hits']]
     Business_ID=[]
     for doc in data:
-        Business_ID.append(doc['_id'].split('=')[1])
+        # Business_ID.append(doc['_id'].split('=')[1])
+        Business_ID.append(doc['_id'])
         
     # response['body'] = Business_ID
     
@@ -742,6 +1417,12 @@ def lambda_handler(event, context):
             }
         }
     )
+    
+    
+    sns = boto3.client('sns')
+    phone_number = phone
+    sns.publish(PhoneNumber = phone_number, Message= email_body) 
+    
     return response
 
 ```
