@@ -1222,6 +1222,54 @@ upload_key = "my-restaurants/FILE_3.csv"
 s3_client.upload_file('/tmp/FILE_3.csv', bucket, upload_key)
 ```
 
+**6. Store the prediction results from FILE_3 but only those labelled as 1
+from step 5 in ElasticSearch under the “predictions” index, where each prediction has a “Prediction” data type. This data type will be of composite type stored as JSON in ElasticSearch.**
+
+![image-20190430230618315](/Users/cong/Library/Application Support/typora-user-images/image-20190430230618315.png)
+
+```python
+# -*- coding: utf-8 -*-
+from elasticsearch import Elasticsearch, RequestsHttpConnection
+from requests_aws4auth import AWS4Auth
+import boto3
+from elasticsearch import helpers, Elasticsearch
+import csv
+
+host = 'search-my-ml-restaurants-mnncskxhgpqmz6psyq7sevxauu.us-east-1.es.amazonaws.com' 
+region = 'us-east-1' 
+
+service = 'es'
+credentials = boto3.Session().get_credentials()
+awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service)
+
+es = Elasticsearch(
+    hosts = [{'host': host, 'port': 443}],
+    http_auth = awsauth,
+    use_ssl = True,
+    verify_certs = True,
+    connection_class = RequestsHttpConnection
+)
+
+res=[]
+with open('/Users/cong/Downloads/FILE_3.csv') as f:
+    reader = csv.DictReader(f)
+    for line in reader:
+        # print(line)
+        if line['Label'] == '1':
+            res.append({ "Business_ID" : line["Business_ID"], "Cuisine_Type" : line["Cuisine_Type"], "Score" : line["Score"],"Label" : line["Label"]})
+    # print(res)
+    structured_json_body = ({
+        "_op_type": "index",
+        "_index":'prediction' ,  # index name Twitter
+        "_type": 'prediction',  # type is tweet
+        "_id": doc['Business_ID'],  # id of the tweet
+        "_source": doc} for doc in res)
+    helpers.bulk(es, structured_json_body, index='Prediction', doc_type='_doc')
+
+print(es.get(index="Prediction", doc_type="_doc"))
+
+```
+
 **7. Build a suggestions module, that is decoupled from the Lex chatbot.**
 
 - In LF1, during the fulfillment step, push the information collected from the user (location, cuisine, etc.) to an SQS queue. 
